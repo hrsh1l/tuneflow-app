@@ -105,11 +105,11 @@ def _allowed_chords_for_key(key_root: int, key_mode: str, use_flats: bool) -> Li
     if key_mode == "major":
         major_degrees = [0, 5, 7]      # I, IV, V
         minor_degrees = [2, 4, 9]      # ii, iii, vi
-        dim_degrees = [11]             # vii°
+        dim_degrees = [11]             # vii* (diminished 7th)
     else:
         major_degrees = [3, 8, 10]     # III, VI, VII
         minor_degrees = [0, 5, 7]      # i, iv, v
-        dim_degrees = [2]              # ii°
+        dim_degrees = [2]              # ii* (diminished 2nd)
 
     major_chords = [note_names[(key_root + degree) % 12] for degree in major_degrees]
     minor_chords = [f"{note_names[(key_root + degree) % 12]}m" for degree in minor_degrees]
