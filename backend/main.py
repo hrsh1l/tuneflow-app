@@ -1,18 +1,27 @@
-import asyncio
-import tempfile
 import os
+import asyncio
+import importlib.util
 import shutil
+import tempfile
+from collections import OrderedDict
+from copy import deepcopy
+from datetime import datetime, timezone
+from hashlib import sha256
+from threading import Lock
+from time import monotonic, time
+from urllib.parse import parse_qsl, urlparse
+
 import librosa
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from chord_detector import detect_chords
-from lyric_transcriber import transcribe_lyrics
+from lyric_transcriber import SUPPORTED_TRANSCRIPTION_MODELS, transcribe_lyrics
 from aligner import align_chords_to_lyrics
 from output_postprocessor import postprocess_analysis_output
 
-app = FastAPI(title="Chord Detection API", version="1.0.0")
+app = FastAPI(title="Chord Detection API", version="1.1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -23,7 +32,81 @@ app.add_middleware(
 )
 
 ALLOWED_TYPES = {"audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav"}
+ALLOWED_EXTENSIONS = {".mp3", ".wav"}
 MAX_FILE_SIZE_MB = 20
+DEFAULT_TRANSCRIPTION_MODEL = "base"
+DEFAULT_CHORD_WINDOW_SECONDS = 1.0
+MIN_CHORD_WINDOW_SECONDS = 0.25
+MAX_CHORD_WINDOW_SECONDS = 4.0
+APP_START_MONOTONIC = monotonic()
+
+
+def _read_positive_int_env(var_name: str, default: int) -> int:
+    raw = os.getenv(var_name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+class AnalysisCache:
+    def __init__(self, ttl_seconds: int, max_items: int) -> None:
+        self.ttl_seconds = max(1, ttl_seconds)
+        self.max_items = max(1, max_items)
+        self._lock = Lock()
+        self._store: OrderedDict[str, tuple[float, dict]] = OrderedDict()
+
+    def get(self, key: str) -> dict | None:
+        now = time()
+        with self._lock:
+            self._purge_expired_locked(now)
+            item = self._store.get(key)
+            if item is None:
+                return None
+
+            expires_at, payload = item
+            if expires_at <= now:
+                self._store.pop(key, None)
+                return None
+
+            self._store.move_to_end(key)
+            return deepcopy(payload)
+
+    def set(self, key: str, payload: dict) -> None:
+        now = time()
+        with self._lock:
+            self._purge_expired_locked(now)
+            self._store[key] = (now + self.ttl_seconds, deepcopy(payload))
+            self._store.move_to_end(key)
+            while len(self._store) > self.max_items:
+                self._store.popitem(last=False)
+
+    def stats(self) -> dict:
+        now = time()
+        with self._lock:
+            self._purge_expired_locked(now)
+            return {
+                "enabled": True,
+                "ttl_seconds": self.ttl_seconds,
+                "max_items": self.max_items,
+                "items": len(self._store),
+            }
+
+    def _purge_expired_locked(self, now: float) -> None:
+        expired_keys = [
+            key for key, (expires_at, _payload) in self._store.items() if expires_at <= now
+        ]
+        for key in expired_keys:
+            self._store.pop(key, None)
+
+
+ANALYSIS_CACHE = AnalysisCache(
+    ttl_seconds=_read_positive_int_env("TUNEFLOW_CACHE_TTL_SECONDS", 1800),
+    max_items=_read_positive_int_env("TUNEFLOW_CACHE_MAX_ITEMS", 32),
+)
 
 
 @app.get("/health")
@@ -31,10 +114,42 @@ async def health():
     return {"status": "ok"}
 
 
+@app.get("/health/details")
+async def health_details():
+    return {
+        "status": "ok",
+        "uptime_seconds": round(monotonic() - APP_START_MONOTONIC, 3),
+        "cache": ANALYSIS_CACHE.stats(),
+        "dependencies": {
+            "faster_whisper": _is_module_available("faster_whisper"),
+            "yt_dlp": _is_module_available("yt_dlp"),
+        },
+    }
+
+
+@app.get("/analysis/options")
+async def analysis_options():
+    return {
+        "allowed_mime_types": sorted(ALLOWED_TYPES),
+        "allowed_extensions": sorted(ALLOWED_EXTENSIONS),
+        "max_file_size_mb": MAX_FILE_SIZE_MB,
+        "transcription_models": sorted(SUPPORTED_TRANSCRIPTION_MODELS),
+        "default_transcription_model": DEFAULT_TRANSCRIPTION_MODEL,
+        "chord_window_seconds": {
+            "default": DEFAULT_CHORD_WINDOW_SECONDS,
+            "min": MIN_CHORD_WINDOW_SECONDS,
+            "max": MAX_CHORD_WINDOW_SECONDS,
+        },
+        "cache": ANALYSIS_CACHE.stats(),
+    }
+
+
 @app.post("/analyze")
 async def analyze_song(
     file: UploadFile | None = File(default=None),
     youtube_url: str | None = Form(default=None),
+    transcription_model: str = Form(default=DEFAULT_TRANSCRIPTION_MODEL),
+    chord_window_seconds: float = Form(default=DEFAULT_CHORD_WINDOW_SECONDS),
 ):
     """
     Accepts an MP3/WAV file or a YouTube URL and returns chords aligned to lyrics.
@@ -51,10 +166,35 @@ async def analyze_song(
             ...
         ],
         "title": "Untitled",
-        "duration": 214.5
+        "duration": 214.5,
+        "analysis_meta": {
+            "cache_hit": false,
+            "transcription_model": "base",
+            "chord_window_seconds": 1.0
+        }
     }
     """
     youtube_url = (youtube_url or "").strip()
+    transcription_model = (transcription_model or DEFAULT_TRANSCRIPTION_MODEL).strip().lower()
+
+    if transcription_model not in SUPPORTED_TRANSCRIPTION_MODELS:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Unsupported transcription_model. "
+                f"Supported values: {', '.join(sorted(SUPPORTED_TRANSCRIPTION_MODELS))}."
+            ),
+        )
+
+    if not (MIN_CHORD_WINDOW_SECONDS <= chord_window_seconds <= MAX_CHORD_WINDOW_SECONDS):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "chord_window_seconds must be between "
+                f"{MIN_CHORD_WINDOW_SECONDS} and {MAX_CHORD_WINDOW_SECONDS}."
+            ),
+        )
+
     if file is None and not youtube_url:
         raise HTTPException(
             status_code=400,
@@ -70,10 +210,15 @@ async def analyze_song(
     tmp_path = ""
     cleanup_dir = ""
     raw_title = "Untitled"
+    source_type = "file" if file is not None else "youtube"
+    processing_start = monotonic()
+    cache_key = ""
 
     try:
         if file is not None:
-            if file.content_type not in ALLOWED_TYPES:
+            file_content_type = (file.content_type or "").lower()
+            suffix = _resolve_audio_suffix(file.filename or "", file_content_type)
+            if file_content_type not in ALLOWED_TYPES and suffix not in ALLOWED_EXTENSIONS:
                 raise HTTPException(
                     status_code=415,
                     detail=f"Unsupported file type: {file.content_type}. Upload an MP3 or WAV.",
@@ -87,22 +232,58 @@ async def analyze_song(
                 )
 
             # Write to a temp file so both librosa and Whisper can read from disk.
-            suffix = ".mp3" if "mpeg" in file.content_type or "mp3" in file.content_type else ".wav"
+            cache_key = _build_cache_key(
+                source_fingerprint=f"file:{sha256(raw).hexdigest()}",
+                transcription_model=transcription_model,
+                chord_window_seconds=chord_window_seconds,
+            )
+            cached_payload = ANALYSIS_CACHE.get(cache_key)
+            if cached_payload is not None:
+                cached_payload["analysis_meta"] = {
+                    **cached_payload.get("analysis_meta", {}),
+                    "cache_hit": True,
+                    "served_at_utc": _utc_now_iso(),
+                }
+                return JSONResponse(content=cached_payload)
+
             with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
                 tmp.write(raw)
                 tmp_path = tmp.name
             raw_title = os.path.splitext(file.filename)[0] if file.filename else "Untitled"
         else:
+            normalized_youtube_url = _normalize_youtube_url(youtube_url)
+            cache_key = _build_cache_key(
+                source_fingerprint=f"youtube:{normalized_youtube_url}",
+                transcription_model=transcription_model,
+                chord_window_seconds=chord_window_seconds,
+            )
+            cached_payload = ANALYSIS_CACHE.get(cache_key)
+            if cached_payload is not None:
+                cached_payload["analysis_meta"] = {
+                    **cached_payload.get("analysis_meta", {}),
+                    "cache_hit": True,
+                    "served_at_utc": _utc_now_iso(),
+                }
+                return JSONResponse(content=cached_payload)
+
             cleanup_dir = tempfile.mkdtemp(prefix="tuneflow-youtube-")
             tmp_path, raw_title = await asyncio.to_thread(
                 _download_youtube_audio,
-                youtube_url,
+                normalized_youtube_url,
                 cleanup_dir,
             )
 
-        # Run chord detection and transcription in parallel
-        chords_task = asyncio.to_thread(detect_chords, tmp_path)
-        lyrics_task = asyncio.to_thread(transcribe_lyrics, tmp_path)
+        # Run chord detection and transcription in parallel.
+        chords_task = asyncio.to_thread(
+            detect_chords,
+            tmp_path,
+            chord_window_seconds,
+        )
+        lyrics_task = asyncio.to_thread(
+            transcribe_lyrics,
+            tmp_path,
+            transcription_model,
+        )
 
         chord_segments, lyric_segments = await asyncio.gather(chords_task, lyrics_task)
         duration = librosa.get_duration(path=tmp_path)
@@ -116,6 +297,15 @@ async def analyze_song(
             chord_segments=chord_segments,
         )
 
+        postprocessed["analysis_meta"] = {
+            "cache_hit": False,
+            "source_type": source_type,
+            "transcription_model": transcription_model,
+            "chord_window_seconds": round(chord_window_seconds, 3),
+            "processed_at_utc": _utc_now_iso(),
+            "processing_seconds": round(monotonic() - processing_start, 3),
+        }
+        ANALYSIS_CACHE.set(cache_key, postprocessed)
         return JSONResponse(content=postprocessed)
 
     except HTTPException:
@@ -128,6 +318,65 @@ async def analyze_song(
             shutil.rmtree(cleanup_dir, ignore_errors=True)
         elif tmp_path and os.path.exists(tmp_path):
             os.unlink(tmp_path)
+
+
+def _is_module_available(module_name: str) -> bool:
+    return importlib.util.find_spec(module_name) is not None
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _resolve_audio_suffix(filename: str, content_type: str) -> str:
+    lowered_name = (filename or "").lower()
+    lowered_type = (content_type or "").lower()
+    if lowered_type in {"audio/wav", "audio/x-wav"} or lowered_name.endswith(".wav"):
+        return ".wav"
+    if lowered_type in {"audio/mpeg", "audio/mp3"} or lowered_name.endswith(".mp3"):
+        return ".mp3"
+    return ""
+
+
+def _build_cache_key(
+    source_fingerprint: str,
+    transcription_model: str,
+    chord_window_seconds: float,
+) -> str:
+    raw = (
+        f"{source_fingerprint}|"
+        f"transcription_model={transcription_model}|"
+        f"chord_window_seconds={round(chord_window_seconds, 3)}"
+    )
+    return sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _normalize_youtube_url(youtube_url: str) -> str:
+    cleaned = (youtube_url or "").strip()
+    if not cleaned:
+        return cleaned
+
+    parsed = urlparse(cleaned)
+    host = parsed.netloc.lower()
+    if host.startswith("www."):
+        host = host[4:]
+
+    video_id = ""
+    if host == "youtu.be":
+        video_id = parsed.path.strip("/")
+    elif host in {"youtube.com", "m.youtube.com", "music.youtube.com"}:
+        path = parsed.path.strip("/")
+        if path == "watch":
+            query = dict(parse_qsl(parsed.query))
+            video_id = query.get("v", "")
+        elif path.startswith("shorts/"):
+            video_id = path.split("/", 1)[1]
+        elif path.startswith("embed/"):
+            video_id = path.split("/", 1)[1]
+
+    if video_id:
+        return f"https://www.youtube.com/watch?v={video_id}"
+    return cleaned
 
 
 def _download_youtube_audio(youtube_url: str, output_dir: str) -> tuple[str, str]:

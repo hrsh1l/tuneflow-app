@@ -7,7 +7,19 @@ one dict per lyric line (grouped by sentence/phrase).
 """
 
 import re
+from threading import Lock
 from typing import List, Dict
+
+SUPPORTED_TRANSCRIPTION_MODELS = {
+    "tiny",
+    "base",
+    "small",
+    "medium",
+    "large-v3",
+}
+
+_MODEL_CACHE: Dict[str, object] = {}
+_MODEL_CACHE_LOCK = Lock()
 
 
 def _join_words(words: List[str]) -> str:
@@ -70,6 +82,23 @@ def _segment_words_into_lines(word_items: List[Dict]) -> List[Dict]:
     return lines
 
 
+def _get_model(model_size: str):
+    # Lazy import so the module loads even if faster-whisper isn't installed.
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError:
+        raise RuntimeError(
+            "faster-whisper is not installed. Run: pip install faster-whisper"
+        )
+
+    with _MODEL_CACHE_LOCK:
+        model = _MODEL_CACHE.get(model_size)
+        if model is None:
+            model = WhisperModel(model_size, device="cpu", compute_type="int8")
+            _MODEL_CACHE[model_size] = model
+    return model
+
+
 def transcribe_lyrics(audio_path: str, model_size: str = "base") -> List[Dict]:
     """
     Transcribe the audio at audio_path using Whisper.
@@ -82,15 +111,7 @@ def transcribe_lyrics(audio_path: str, model_size: str = "base") -> List[Dict]:
     Returns:
         [{"start": 4.2, "end": 8.0, "text": "I walked a lonely road"}, ...]
     """
-    # Lazy import so the module loads even if faster-whisper isn't installed
-    try:
-        from faster_whisper import WhisperModel
-    except ImportError:
-        raise RuntimeError(
-            "faster-whisper is not installed. Run: pip install faster-whisper"
-        )
-
-    model = WhisperModel(model_size, device="cpu", compute_type="int8")
+    model = _get_model(model_size)
 
     segments, _info = model.transcribe(
         audio_path,

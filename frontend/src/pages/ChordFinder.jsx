@@ -1,11 +1,59 @@
+import { useMemo, useState } from "react";
+import { analyzeSong } from "../api";
+
 function ChordFinder() {
+  const [youtubeUrl, setYoutubeUrl] = useState("");
+  const [audioFile, setAudioFile] = useState(null);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+
+  const canAnalyse = useMemo(
+    () => Boolean(audioFile || youtubeUrl.trim()),
+    [audioFile, youtubeUrl],
+  );
+
+  async function handleAnalyse() {
+    if (!canAnalyse) {
+      setError("Please choose an audio file or paste a YouTube URL.");
+      return;
+    }
+
+    setIsLoading(true);
+    setError("");
+
+    try {
+      const payload = await analyzeSong({
+        youtubeUrl: youtubeUrl.trim(),
+        audioFile,
+      });
+      setResult(payload);
+    } catch (requestError) {
+      setResult(null);
+      setError(requestError.message);
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  function formatSeconds(value) {
+    if (typeof value !== "number" || Number.isNaN(value)) {
+      return "--";
+    }
+    const minutes = Math.floor(value / 60);
+    const seconds = Math.floor(value % 60)
+      .toString()
+      .padStart(2, "0");
+    return `${minutes}:${seconds}`;
+  }
+
   return (
     <div style={styles.page}>
       <div style={styles.container}>
         <h1 style={styles.title}>AI Chord Finder</h1>
         <p style={styles.subtitle}>
           Upload a song file or paste a YouTube link to analyse the track and
-          generate the chords needed to play it.
+          generate chords aligned with transcribed lyric lines.
         </p>
 
         <div style={styles.inputSection}>
@@ -15,47 +63,94 @@ function ChordFinder() {
               type="text"
               placeholder="Paste a YouTube URL here"
               style={styles.input}
+              value={youtubeUrl}
+              onChange={(event) => setYoutubeUrl(event.target.value)}
             />
+            <small style={styles.helperText}>
+              Paste a YouTube link to analyse directly from the video audio.
+            </small>
           </div>
 
           <div style={styles.orText}>OR</div>
 
           <div style={styles.inputBox}>
             <label style={styles.label}>Upload Audio File</label>
-            <input type="file" accept="audio/*" style={styles.fileInput} />
+            <input
+              type="file"
+              accept="audio/*"
+              style={styles.fileInput}
+              onChange={(event) => setAudioFile(event.target.files?.[0] ?? null)}
+            />
           </div>
         </div>
 
-        <button style={styles.button}>Analyse Song</button>
+        <button
+          style={{
+            ...styles.button,
+            ...(isLoading || !canAnalyse ? styles.buttonDisabled : {}),
+          }}
+          onClick={handleAnalyse}
+          disabled={isLoading || !canAnalyse}
+        >
+          {isLoading ? "Analysing..." : "Analyse Song"}
+        </button>
+
+        {error ? <p style={styles.errorText}>{error}</p> : null}
 
         <div style={styles.resultsSection}>
           <h2 style={styles.resultsTitle}>Analysis Results</h2>
-          <p style={styles.resultsText}>
-            The detected chords and song structure will appear here once the song has been analysed.
-          </p>
+          {!result ? (
+            <p style={styles.resultsText}>
+              The detected chords and song structure will appear here once the
+              song has been analysed.
+            </p>
+          ) : (
+            <>
+              <p style={styles.resultsText}>
+                Title: <strong>{result.title || "Untitled"}</strong>
+              </p>
+              <p style={styles.resultsText}>
+                Key: <strong>{result.key || "Unknown"}</strong> | Duration:{" "}
+                <strong>{formatSeconds(result.duration)}</strong>
+              </p>
 
-          <div style={styles.chordPreview}>
-            <h3 style={styles.previewHeading}>Chord Preview</h3>
-            <p style={styles.previewText}>G • Em • C • D</p>
-          </div>
+              <div style={styles.chordPreview}>
+                <h3 style={styles.previewHeading}>Chord Progression</h3>
+                <p style={styles.previewText}>
+                  {[...new Set((result.lines || []).flatMap((line) => line.chords || []))].join(
+                    " - ",
+                  ) || "No chords detected yet."}
+                </p>
+              </div>
 
-          <div style={styles.lyricsPreview}>
-            <h3 style={styles.previewHeading}>Lyrics + Chords Preview</h3>
-            <pre style={styles.preformatted}>
-{`        G        Em
-I found a love for me
-  C
-Darling, just dive right in
-           D
-And follow my lead
-     G           Em
-Well, I found a girl, beautiful and sweet
-C
-I never knew you were the someone
-          D
-waiting for me `}
-            </pre>
-          </div>
+              <div style={styles.lyricsPreview}>
+                <h3 style={styles.previewHeading}>Lyrics + Chords</h3>
+                {(result.sections || []).length > 0 ? (
+                  (result.sections || []).map((section) => (
+                    <div key={section.name} style={styles.sectionBlock}>
+                      <h4 style={styles.sectionHeading}>[{section.name}]</h4>
+                      {(section.lines || []).map((line, index) => (
+                        <pre style={styles.preformatted} key={`${section.name}-${index}`}>
+                          {(line.chord_line || line.chords.join(" ") || "N") + "\n"}
+                          {line.text || ""}
+                        </pre>
+                      ))}
+                    </div>
+                  ))
+                ) : (
+                  <pre style={styles.preformatted}>
+                    {(result.lines || [])
+                      .map(
+                        (line) =>
+                          `${line.start.toFixed(2)}s - ${line.end.toFixed(2)}s | ${line.chords.join(" ") || "N"}\n${line.text}`,
+                      )
+                      .join("\n\n") || "No aligned lyric/chord output available."}
+                  </pre>
+                )}
+              </div>
+
+            </>
+          )}
         </div>
       </div>
     </div>
@@ -118,6 +213,10 @@ const styles = {
     border: "1px solid #ccc",
     backgroundColor: "#fff",
   },
+  helperText: {
+    color: "#666",
+    fontSize: "0.85rem",
+  },
   orText: {
     textAlign: "center",
     fontWeight: "bold",
@@ -133,6 +232,17 @@ const styles = {
     cursor: "pointer",
     backgroundColor: "#222",
     color: "#fff",
+  },
+  buttonDisabled: {
+    backgroundColor: "#7a7a7a",
+    cursor: "not-allowed",
+  },
+  errorText: {
+    marginTop: "-15px",
+    marginBottom: "25px",
+    color: "#b00020",
+    textAlign: "center",
+    fontWeight: "600",
   },
   resultsSection: {
     backgroundColor: "#fafafa",
@@ -158,6 +268,13 @@ const styles = {
     padding: "20px",
     backgroundColor: "#f0f4f8",
     borderRadius: "12px",
+  },
+  sectionBlock: {
+    marginBottom: "20px",
+  },
+  sectionHeading: {
+    margin: "10px 0",
+    color: "#1c2a4a",
   },
   previewHeading: {
     marginTop: 0,
