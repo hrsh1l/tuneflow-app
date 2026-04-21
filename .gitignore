@@ -1,0 +1,11 @@
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+
+# Local virtual environments
+.venv/
+backend/.venv/
+
+# Backend caches
+backend/__pycache__/
