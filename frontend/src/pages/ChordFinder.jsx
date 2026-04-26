@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { analyzeSong } from "../api";
+import Navbar from "../components/Navbar";
 
 function ChordFinder() {
   const [youtubeUrl, setYoutubeUrl] = useState("");
@@ -7,6 +8,7 @@ function ChordFinder() {
   const [result, setResult] = useState(null);
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [isEditingLyrics, setIsEditingLyrics] = useState(false);
 
   const canAnalyse = useMemo(
     () => Boolean(audioFile || youtubeUrl.trim()),
@@ -28,6 +30,7 @@ function ChordFinder() {
         audioFile,
       });
       setResult(payload);
+      setIsEditingLyrics(false);
     } catch (requestError) {
       setResult(null);
       setError(requestError.message);
@@ -47,8 +50,47 @@ function ChordFinder() {
     return `${minutes}:${seconds}`;
   }
 
+  function handleSectionLyricChange(sectionIndex, lineIndex, text) {
+    setResult((currentResult) => {
+      if (!currentResult) {
+        return currentResult;
+      }
+
+      const sections = (currentResult.sections || []).map((section, currentSectionIndex) => {
+        if (currentSectionIndex !== sectionIndex) {
+          return section;
+        }
+
+        return {
+          ...section,
+          lines: (section.lines || []).map((line, currentLineIndex) =>
+            currentLineIndex === lineIndex ? { ...line, text } : line,
+          ),
+        };
+      });
+
+      return { ...currentResult, sections };
+    });
+  }
+
+  function handleLineLyricChange(lineIndex, text) {
+    setResult((currentResult) => {
+      if (!currentResult) {
+        return currentResult;
+      }
+
+      return {
+        ...currentResult,
+        lines: (currentResult.lines || []).map((line, currentLineIndex) =>
+          currentLineIndex === lineIndex ? { ...line, text } : line,
+        ),
+      };
+    });
+  }
+
   return (
     <div style={styles.page}>
+      <Navbar />
       <div style={styles.container}>
         <h1 style={styles.title}>AI Chord Finder</h1>
         <p style={styles.subtitle}>
@@ -98,7 +140,17 @@ function ChordFinder() {
         {error ? <p style={styles.errorText}>{error}</p> : null}
 
         <div style={styles.resultsSection}>
-          <h2 style={styles.resultsTitle}>Analysis Results</h2>
+          <div style={styles.resultsHeader}>
+            <h2 style={styles.resultsTitle}>Analysis Results</h2>
+            {result ? (
+              <button
+                style={styles.editLyricsButton}
+                onClick={() => setIsEditingLyrics((editing) => !editing)}
+              >
+                {isEditingLyrics ? "Done Editing" : "Edit Lyrics"}
+              </button>
+            ) : null}
+          </div>
           {!result ? (
             <p style={styles.resultsText}>
               The detected chords and song structure will appear here once the
@@ -126,26 +178,60 @@ function ChordFinder() {
               <div style={styles.lyricsPreview}>
                 <h3 style={styles.previewHeading}>Lyrics + Chords</h3>
                 {(result.sections || []).length > 0 ? (
-                  (result.sections || []).map((section) => (
+                  (result.sections || []).map((section, sectionIndex) => (
                     <div key={section.name} style={styles.sectionBlock}>
                       <h4 style={styles.sectionHeading}>[{section.name}]</h4>
                       {(section.lines || []).map((line, index) => (
-                        <pre style={styles.preformatted} key={`${section.name}-${index}`}>
-                          {(line.chord_line || line.chords.join(" ") || "N") + "\n"}
-                          {line.text || ""}
-                        </pre>
+                        <div style={styles.lyricLineEditor} key={`${section.name}-${index}`}>
+                          <pre style={styles.preformatted}>
+                            {line.chord_line || line.chords.join(" ") || "N"}
+                          </pre>
+                          {isEditingLyrics ? (
+                            <textarea
+                              style={styles.lyricTextarea}
+                              value={line.text || ""}
+                              onChange={(event) =>
+                                handleSectionLyricChange(
+                                  sectionIndex,
+                                  index,
+                                  event.target.value,
+                                )
+                              }
+                            />
+                          ) : (
+                            <pre style={styles.preformatted}>{line.text || ""}</pre>
+                          )}
+                        </div>
                       ))}
                     </div>
                   ))
                 ) : (
-                  <pre style={styles.preformatted}>
-                    {(result.lines || [])
-                      .map(
-                        (line) =>
-                          `${line.start.toFixed(2)}s - ${line.end.toFixed(2)}s | ${line.chords.join(" ") || "N"}\n${line.text}`,
-                      )
-                      .join("\n\n") || "No aligned lyric/chord output available."}
-                  </pre>
+                  <div>
+                    {(result.lines || []).length > 0 ? (
+                      (result.lines || []).map((line, index) => (
+                        <div style={styles.lyricLineEditor} key={`${line.start}-${index}`}>
+                          <pre style={styles.preformatted}>
+                            {`${line.start.toFixed(2)}s - ${line.end.toFixed(2)}s | ${line.chords.join(" ") || "N"}`}
+                          </pre>
+                          {isEditingLyrics ? (
+                            <textarea
+                              style={styles.lyricTextarea}
+                              value={line.text || ""}
+                              onChange={(event) =>
+                                handleLineLyricChange(index, event.target.value)
+                              }
+                            />
+                          ) : (
+                            <pre style={styles.preformatted}>{line.text || ""}</pre>
+                          )}
+                        </div>
+                      ))
+                    ) : (
+                      <pre style={styles.preformatted}>
+                        No aligned lyric/chord output available.
+                      </pre>
+                    )}
+                  </div>
                 )}
               </div>
 
@@ -160,27 +246,29 @@ function ChordFinder() {
 const styles = {
   page: {
     minHeight: "100vh",
-    backgroundColor: "#f5f7fb",
+    background: "linear-gradient(180deg, #eaf7ff 0%, #d8efff 100%)",
     fontFamily: "Arial, sans-serif",
-    padding: "40px 20px",
   },
   container: {
+    width: "calc(100% - 40px)",
     maxWidth: "900px",
-    margin: "0 auto",
-    backgroundColor: "#ffffff",
+    margin: "40px auto",
+    backgroundColor: "#f7fcff",
     borderRadius: "16px",
     padding: "40px",
-    boxShadow: "0 6px 20px rgba(0,0,0,0.08)",
+    boxSizing: "border-box",
+    border: "1px solid #b9ddf5",
+    boxShadow: "0 12px 28px rgba(25, 118, 185, 0.14)",
   },
   title: {
     fontSize: "2.5rem",
-    color: "#111",
+    color: "#102a43",
     marginBottom: "10px",
     textAlign: "center",
   },
   subtitle: {
     fontSize: "1.05rem",
-    color: "#555",
+    color: "#4c647a",
     lineHeight: "1.6",
     textAlign: "center",
     marginBottom: "35px",
@@ -198,29 +286,32 @@ const styles = {
   },
   label: {
     fontWeight: "600",
-    color: "#222",
+    color: "#123047",
   },
   input: {
     padding: "14px",
     fontSize: "1rem",
     borderRadius: "10px",
-    border: "1px solid #ccc",
+    border: "1px solid #9fd0ef",
+    backgroundColor: "#ffffff",
+    color: "#102a43",
   },
   fileInput: {
     padding: "10px",
     fontSize: "1rem",
     borderRadius: "10px",
-    border: "1px solid #ccc",
+    border: "1px solid #9fd0ef",
     backgroundColor: "#fff",
+    color: "#102a43",
   },
   helperText: {
-    color: "#666",
+    color: "#5f7890",
     fontSize: "0.85rem",
   },
   orText: {
     textAlign: "center",
     fontWeight: "bold",
-    color: "#666",
+    color: "#4c83a8",
   },
   button: {
     display: "block",
@@ -230,12 +321,14 @@ const styles = {
     border: "none",
     borderRadius: "10px",
     cursor: "pointer",
-    backgroundColor: "#222",
+    backgroundColor: "#1976b9",
     color: "#fff",
+    boxShadow: "0 8px 18px rgba(25, 118, 185, 0.22)",
   },
   buttonDisabled: {
-    backgroundColor: "#7a7a7a",
+    backgroundColor: "#8cb8d4",
     cursor: "not-allowed",
+    boxShadow: "none",
   },
   errorText: {
     marginTop: "-15px",
@@ -245,29 +338,49 @@ const styles = {
     fontWeight: "600",
   },
   resultsSection: {
-    backgroundColor: "#fafafa",
-    border: "1px solid #e5e5e5",
+    backgroundColor: "#eef8ff",
+    border: "1px solid #b9ddf5",
     borderRadius: "14px",
     padding: "25px",
   },
+  resultsHeader: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: "16px",
+    marginBottom: "10px",
+  },
   resultsTitle: {
     marginTop: 0,
-    color: "#111",
+    marginBottom: 0,
+    color: "#102a43",
+  },
+  editLyricsButton: {
+    padding: "10px 16px",
+    fontSize: "0.95rem",
+    border: "1px solid #9fd0ef",
+    borderRadius: "10px",
+    cursor: "pointer",
+    backgroundColor: "#ffffff",
+    color: "#0f5f99",
+    fontWeight: "600",
   },
   resultsText: {
-    color: "#555",
+    color: "#4c647a",
     marginBottom: "25px",
   },
   chordPreview: {
     marginBottom: "25px",
     padding: "20px",
-    backgroundColor: "#f0f4f8",
+    backgroundColor: "#dff1fb",
     borderRadius: "12px",
+    border: "1px solid #b9ddf5",
   },
   lyricsPreview: {
     padding: "20px",
-    backgroundColor: "#f0f4f8",
+    backgroundColor: "#dff1fb",
     borderRadius: "12px",
+    border: "1px solid #b9ddf5",
   },
   sectionBlock: {
     marginBottom: "20px",
@@ -276,19 +389,37 @@ const styles = {
     margin: "10px 0",
     color: "#1c2a4a",
   },
+  lyricLineEditor: {
+    marginBottom: "16px",
+  },
+  lyricTextarea: {
+    width: "100%",
+    minHeight: "54px",
+    resize: "vertical",
+    boxSizing: "border-box",
+    marginTop: "4px",
+    padding: "10px 12px",
+    border: "1px solid #9fd0ef",
+    borderRadius: "10px",
+    backgroundColor: "#ffffff",
+    color: "#123047",
+    fontFamily: "monospace",
+    fontSize: "0.95rem",
+    lineHeight: "1.5",
+  },
   previewHeading: {
     marginTop: 0,
-    color: "#111",
+    color: "#102a43",
   },
   previewText: {
     fontSize: "1.2rem",
     fontWeight: "600",
-    color: "#222",
+    color: "#123047",
   },
   preformatted: {
     whiteSpace: "pre-wrap",
     fontFamily: "monospace",
-    color: "#222",
+    color: "#123047",
     margin: 0,
   },
 };

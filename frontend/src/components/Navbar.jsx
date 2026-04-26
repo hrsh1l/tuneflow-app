@@ -16,12 +16,13 @@ const styles = {
     justifyContent: "space-between",
     alignItems: "center",
     padding: "20px 40px",
-    backgroundColor: "#ffffff",
-    borderBottom: "1px solid #ddd",
+    backgroundColor: "#f4fbff",
+    borderBottom: "1px solid #b9ddf5",
+    boxShadow: "0 2px 14px rgba(25, 118, 185, 0.08)",
   },
   logo: {
     margin: 0,
-    color: "#111",
+    color: "#0f5f99",
     fontWeight: "bold",
     fontSize: "1.5rem",
   },
@@ -31,7 +32,7 @@ const styles = {
   },
   link: {
     textDecoration: "none",
-    color: "#111",
+    color: "#124c74",
     fontWeight: "500",
   },
 };

@@ -25,9 +25,9 @@ function Home() {
 const styles = {
   page: {
     minHeight: "100vh",
-    backgroundColor: "#f5f7fb",
+    background: "linear-gradient(180deg, #eaf7ff 0%, #d8efff 100%)",
     fontFamily: "Arial, sans-serif",
-    color: "#222",
+    color: "#123047",
   },
   features: {
     display: "flex",

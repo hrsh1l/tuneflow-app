@@ -9,12 +9,14 @@ function FeatureCard({ title, description }) {
 
 const styles = {
   card: {
-    backgroundColor: "white",
+    backgroundColor: "#f7fcff",
     padding: "25px",
     borderRadius: "12px",
-    boxShadow: "0 4px 10px rgba(0,0,0,0.08)",
+    border: "1px solid #b9ddf5",
+    boxShadow: "0 8px 18px rgba(25, 118, 185, 0.12)",
     width: "280px",
     textAlign: "center",
+    color: "#123047",
   },
 };
 

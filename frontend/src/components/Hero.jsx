@@ -1,4 +1,8 @@
+import { useNavigate } from "react-router-dom";
+
 function Hero() {
+  const navigate = useNavigate();
+
   return (
     <main style={styles.hero}>
       <div style={styles.heroText}>
@@ -6,7 +10,9 @@ function Hero() {
         <p style={styles.subtitle}>
           A simple website to help guitarists find chords for their favourite songs
         </p>
-        <button style={styles.button}>Get Started</button>
+        <button style={styles.button} onClick={() => navigate("/chord-finder")}>
+          Get Started
+        </button>
       </div>
     </main>
   );
@@ -26,13 +32,13 @@ const styles = {
   title: {
     fontSize: "2rem",
     marginBottom: "20px",
-    color: "#111",
+    color: "#102a43",
   },
   subtitle: {
     fontSize: "1.1rem",
     lineHeight: "1.6",
     marginBottom: "30px",
-    color: "#555",
+    color: "#4c647a",
   },
   button: {
     padding: "12px 24px",
@@ -40,8 +46,9 @@ const styles = {
     border: "none",
     borderRadius: "8px",
     cursor: "pointer",
-    backgroundColor: "#222",
+    backgroundColor: "#1976b9",
     color: "white",
+    boxShadow: "0 8px 18px rgba(25, 118, 185, 0.22)",
   },
 };
 
